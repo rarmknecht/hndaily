@@ -27,13 +27,14 @@ try:
 except ImportError:
     pass
 
-BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
-CHAT_ID          = os.environ.get("OWNER_ID", "")        # OWNER_ID is the numeric chat id
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+BOT_TOKEN       = os.environ.get("BOT_TOKEN", "")
+CHAT_ID         = os.environ.get("OWNER_ID", "")   # OWNER_ID is the numeric chat id
+LEMONADE_URL    = os.environ.get("LEMONADE_URL", "http://localhost:8000/v1")
+LEMONADE_MODEL  = os.environ.get("LEMONADE_MODEL", "Gemma-3-4b-it-GGUF")
 
-if not BOT_TOKEN or not CHAT_ID or not ANTHROPIC_API_KEY:
+if not BOT_TOKEN or not CHAT_ID:
     sys.exit(
-        "Missing credentials. Set BOT_TOKEN, OWNER_ID, and ANTHROPIC_API_KEY "
+        "Missing credentials. Set BOT_TOKEN and OWNER_ID "
         "in your environment or a .env file."
     )
 
@@ -132,15 +133,18 @@ def fetch_article_text(url: str, max_chars: int = 8000) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — Summarise with Claude
+# Step 4 — Summarise with local Gemma via lemonade-server
 # ---------------------------------------------------------------------------
 def summarise(title: str, article_text: str) -> dict:
-    """Call Claude claude-opus-4-5 and return {summary, key_points}."""
+    """Call local Gemma-3-4b-it via lemonade-server and return {summary, key_points}."""
+    import json
+
     prompt = textwrap.dedent(f"""
-        You are a concise analyst. Read the article below and return ONLY valid JSON
-        with exactly two keys:
-          "summary"    — 3-4 sentence overview
-          "key_points" — list of 3-5 bullet strings (each ≤ 20 words)
+        Read the article below and return ONLY a valid JSON object with exactly two keys:
+          "summary"    — 3-4 sentence overview of the article
+          "key_points" — list of 3-5 short bullet strings (each 20 words or fewer)
+
+        Do not include any text before or after the JSON object.
 
         Article title: {title}
 
@@ -149,33 +153,29 @@ def summarise(title: str, article_text: str) -> dict:
     """).strip()
 
     payload = {
-        "model": "claude-opus-4-5",
+        "model": LEMONADE_MODEL,
         "max_tokens": 600,
+        "temperature": 0.2,
         "messages": [{"role": "user", "content": prompt}],
     }
     resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
+        f"{LEMONADE_URL}/chat/completions",
+        headers={"content-type": "application/json"},
         json=payload,
-        timeout=60,
+        timeout=120,  # local inference can be slower than cloud
     )
     resp.raise_for_status()
-    raw = resp.json()["content"][0]["text"].strip()
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
 
-    # Extract JSON even if Claude wraps it in ```json ... ```
+    # Extract JSON block (model may wrap in ```json ... ```)
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if m:
-        import json
         try:
             return json.loads(m.group())
         except Exception:
             pass
 
-    # Fallback
+    # Fallback: return raw text as summary
     return {"summary": raw, "key_points": []}
 
 
@@ -254,7 +254,7 @@ def main():
         print("   Fetching article text…")
         article_text = fetch_article_text(story["url"])
 
-        print("   Summarising with Claude…")
+        print("   Summarising with Gemma-3-4b (local)…")
         analysis = summarise(story["title"], article_text)
 
         print("   Sending Telegram message…")
