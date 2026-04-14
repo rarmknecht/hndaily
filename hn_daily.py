@@ -2,9 +2,11 @@
 """
 HN Daily — Hacker News front page digest via Telegram
 Pulls top 5 stories matching AI / cybersecurity / ethics / philosophy,
-summarises each with Claude, and sends a Telegram message per article.
+summarises each with a local LLM (Gemma via lemonade-server), and sends
+a Telegram message per article.
 """
 
+import json
 import os
 import re
 import sys
@@ -13,13 +15,38 @@ import textwrap
 import requests
 from bs4 import BeautifulSoup
 
+
+# ---------------------------------------------------------------------------
+# Retry helper — wraps requests.post with exponential backoff
+# ---------------------------------------------------------------------------
+def post_with_retry(url, retries: int = 3, backoff: float = 5.0, **kwargs):
+    """POST with up to `retries` attempts, doubling backoff on each failure (backoff in minutes)."""
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(url, **kwargs)  # nosec B113 — timeout in **kwargs  # pylint: disable=missing-timeout
+            return r
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ReadTimeout) as e:
+            last_exc = e
+            if attempt < retries:
+                wait = backoff * (2 ** (attempt - 1))
+                print(f"   ⚠️  Attempt {attempt}/{retries} failed ({e}). Retrying in {wait:.0f}m…")
+                time.sleep(wait * 60)
+    raise last_exc
+
+
 # ---------------------------------------------------------------------------
 # Config — reads from environment (or .env if python-dotenv is installed)
 # ---------------------------------------------------------------------------
 try:
     from dotenv import load_dotenv
     # Walk up from this script to find a .env
-    for _d in [os.path.dirname(__file__), os.path.expanduser("~/Gitea/pai-telegram"), os.path.expanduser("~")]:
+    for _d in [
+        os.path.dirname(__file__),
+        os.path.expanduser("~"),
+    ]:
         _f = os.path.join(_d, ".env")
         if os.path.exists(_f):
             load_dotenv(_f)
@@ -27,10 +54,10 @@ try:
 except ImportError:
     pass
 
-BOT_TOKEN       = os.environ.get("BOT_TOKEN", "")
-CHAT_ID         = os.environ.get("OWNER_ID", "")   # OWNER_ID is the numeric chat id
-LEMONADE_URL    = os.environ.get("LEMONADE_URL", "http://localhost:8000/v1")
-LEMONADE_MODEL  = os.environ.get("LEMONADE_MODEL", "Gemma-3-4b-it-GGUF")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CHAT_ID = os.environ.get("OWNER_ID", "")   # OWNER_ID is the numeric chat id
+LEMONADE_URL = os.environ.get("LEMONADE_URL", "http://localhost:8000/v1")
+LEMONADE_MODEL = os.environ.get("LEMONADE_MODEL", "Gemma-3-4b-it-GGUF")
 
 if not BOT_TOKEN or not CHAT_ID:
     sys.exit(
@@ -86,7 +113,7 @@ def fetch_hn_stories() -> list[dict]:
         if not title_span:
             continue
         title = title_span.get_text(strip=True)
-        url   = title_span.get("href", "")
+        url = title_span.get("href", "")
         # Skip HN-internal "Ask HN" / "Show HN" items that have no real article
         if url.startswith("item?id="):
             url = f"https://news.ycombinator.com/{url}"
@@ -99,11 +126,13 @@ def fetch_hn_stories() -> list[dict]:
 # Step 2 — Score & pick top N
 # ---------------------------------------------------------------------------
 def score_story(title: str) -> int:
+    """Return interest score for a story title based on keyword matches."""
     t = title.lower()
     return sum(v for k, v in INTEREST_KEYWORDS.items() if k in t)
 
 
 def pick_top(stories: list[dict], n: int = 5) -> list[dict]:
+    """Return the top-n stories sorted by interest score descending."""
     scored = sorted(stories, key=lambda s: score_story(s["title"]), reverse=True)
     return scored[:n]
 
@@ -112,11 +141,16 @@ def pick_top(stories: list[dict], n: int = 5) -> list[dict]:
 # Step 3 — Fetch & clean article text
 # ---------------------------------------------------------------------------
 def fetch_article_text(url: str, max_chars: int = 8000) -> str:
-    """Download URL, strip boilerplate, return plain text (truncated)."""
+    """Download URL, strip boilerplate, return plain text (truncated).
+
+    Note: this function fetches arbitrary third-party URLs sourced from HN.
+    That is intentional behaviour; callers should not pass untrusted local
+    addresses (SSRF risk if the script is ever exposed as a service).
+    """
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         resp.raise_for_status()
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught  # network errors are diverse
         return f"[Could not fetch article: {e}]"
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -127,8 +161,8 @@ def fetch_article_text(url: str, max_chars: int = 8000) -> str:
 
     text = soup.get_text(separator="\n", strip=True)
     # Collapse blank lines
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    text  = "\n".join(lines)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    text = "\n".join(lines)
     return text[:max_chars]
 
 
@@ -137,8 +171,6 @@ def fetch_article_text(url: str, max_chars: int = 8000) -> str:
 # ---------------------------------------------------------------------------
 def summarise(title: str, article_text: str) -> dict:
     """Call local Gemma-3-4b-it via lemonade-server and return {summary, key_points}."""
-    import json
-
     prompt = textwrap.dedent(f"""
         Read the article below and return ONLY a valid JSON object with exactly two keys:
           "summary"    — 3-4 sentence overview of the article
@@ -172,7 +204,7 @@ def summarise(title: str, article_text: str) -> dict:
     if m:
         try:
             return json.loads(m.group())
-        except Exception:
+        except json.JSONDecodeError:
             pass
 
     # Fallback: return raw text as summary
@@ -189,27 +221,31 @@ def escape_md2(text: str) -> str:
 
 
 def send_telegram(story: dict, analysis: dict) -> None:
-    title      = story["title"]
-    url        = story["url"]
-    hn_url     = f"https://news.ycombinator.com/item?id={story['hn_id']}"
-    summary    = analysis.get("summary", "No summary available.")
+    """Format and dispatch a Telegram message for one story."""
+    title = story["title"]
+    url = story["url"]
+    hn_url = f"https://news.ycombinator.com/item?id={story['hn_id']}"
+    summary = analysis.get("summary", "No summary available.")
     key_points = analysis.get("key_points", [])
 
     bullets = "\n".join(f"• {p}" for p in key_points) if key_points else "• (none)"
 
-    # --- Try MarkdownV2 first ---
-    def md2(s): return escape_md2(str(s))
+    def md2(s: str) -> str:
+        return escape_md2(str(s))
 
     text_md2 = (
         f"*{md2(title)}*\n\n"
         f"{md2(summary)}\n\n"
         f"*Key Takeaways:*\n"
-        + "\n".join(f"• {md2(p)}" for p in key_points) +
-        f"\n\n[HN Discussion]({hn_url})  |  [Article]({url})"
+        + "\n".join(f"• {md2(p)}" for p in key_points)
+        + f"\n\n[HN Discussion]({hn_url})  |  [Article]({url})"
     )
 
+    # NOTE: BOT_TOKEN is embedded in the Telegram API URL — this is required by the
+    # Telegram Bot API design. Avoid logging this URL at ERROR level or above to
+    # prevent accidental token exposure in log aggregators.
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    r = requests.post(api_url, json={
+    r = post_with_retry(api_url, retries=3, backoff=5.0, json={
         "chat_id": CHAT_ID,
         "text": text_md2,
         "parse_mode": "MarkdownV2",
@@ -227,7 +263,7 @@ def send_telegram(story: dict, analysis: dict) -> None:
         f"🔗 HN: {hn_url}\n"
         f"🔗 Article: {url}"
     )
-    requests.post(api_url, json={
+    post_with_retry(api_url, retries=3, backoff=5.0, json={
         "chat_id": CHAT_ID,
         "text": text_plain,
         "disable_web_page_preview": False,
@@ -238,12 +274,13 @@ def send_telegram(story: dict, analysis: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    """Fetch HN front page, pick top stories, summarise, and dispatch to Telegram."""
     print("📡 Fetching HN front page…")
     stories = fetch_hn_stories()
     print(f"   Found {len(stories)} stories")
 
     top = pick_top(stories, n=5)
-    print(f"\n🏆 Top 5 picks:")
+    print("\n🏆 Top 5 picks:")
     for i, s in enumerate(top, 1):
         score = score_story(s["title"])
         print(f"   {i}. [{score}] {s['title']}")
