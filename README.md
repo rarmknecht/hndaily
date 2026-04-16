@@ -21,7 +21,7 @@ A lightweight Python script that scrapes the [Hacker News](https://news.ycombina
 ## Installation
 
 ```bash
-git clone https://your-repo-url/hndaily.git
+git clone https://github.com/rarmknecht/hndaily.git
 cd hndaily
 pip install -r requirements.txt
 ```
