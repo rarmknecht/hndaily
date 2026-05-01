@@ -19,8 +19,8 @@ from bs4 import BeautifulSoup
 # ---------------------------------------------------------------------------
 # Retry helper — wraps requests.post with exponential backoff
 # ---------------------------------------------------------------------------
-def post_with_retry(url, retries: int = 3, backoff: float = 5.0, **kwargs):
-    """POST with up to `retries` attempts, doubling backoff on each failure (backoff in minutes)."""
+def post_with_retry(url, retries: int = 3, backoff: float = 5.0, label: str = "", **kwargs):
+    """POST with up to `retries` attempts, doubling backoff on each failure (backoff in seconds)."""
     last_exc = None
     for attempt in range(1, retries + 1):
         try:
@@ -32,8 +32,9 @@ def post_with_retry(url, retries: int = 3, backoff: float = 5.0, **kwargs):
             last_exc = e
             if attempt < retries:
                 wait = backoff * (2 ** (attempt - 1))
-                print(f"   ⚠️  Attempt {attempt}/{retries} failed ({e}). Retrying in {wait:.0f}m…")
-                time.sleep(wait * 60)
+                tag = f" [{label}]" if label else ""
+                print(f"   ⚠️{tag} Attempt {attempt}/{retries} failed ({type(e).__name__}). Retrying in {wait:.0f}s…")
+                time.sleep(wait)
     raise last_exc
 
 
@@ -190,11 +191,14 @@ def summarise(title: str, article_text: str) -> dict:
         "temperature": 0.2,
         "messages": [{"role": "user", "content": prompt}],
     }
-    resp = requests.post(
+    resp = post_with_retry(
         f"{LEMONADE_URL}/chat/completions",
+        retries=3,
+        backoff=30.0,
+        label="lemonade",
         headers={"content-type": "application/json"},
         json=payload,
-        timeout=120,  # local inference can be slower than cloud
+        timeout=120,
     )
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"]["content"].strip()
@@ -245,7 +249,7 @@ def send_telegram(story: dict, analysis: dict) -> None:
     # Telegram Bot API design. Avoid logging this URL at ERROR level or above to
     # prevent accidental token exposure in log aggregators.
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    r = post_with_retry(api_url, retries=3, backoff=5.0, json={
+    r = post_with_retry(api_url, retries=3, backoff=300.0, label="telegram", json={
         "chat_id": CHAT_ID,
         "text": text_md2,
         "parse_mode": "MarkdownV2",
@@ -263,7 +267,7 @@ def send_telegram(story: dict, analysis: dict) -> None:
         f"🔗 HN: {hn_url}\n"
         f"🔗 Article: {url}"
     )
-    post_with_retry(api_url, retries=3, backoff=5.0, json={
+    post_with_retry(api_url, retries=3, backoff=300.0, label="telegram", json={
         "chat_id": CHAT_ID,
         "text": text_plain,
         "disable_web_page_preview": False,
@@ -273,8 +277,23 @@ def send_telegram(story: dict, analysis: dict) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def check_lemonade() -> bool:
+    """Return True if lemonade-server is reachable."""
+    try:
+        r = requests.get(f"{LEMONADE_URL}/models", timeout=10)
+        return r.status_code < 500
+    except Exception:  # pylint: disable=broad-exception-caught
+        return False
+
+
 def main():
     """Fetch HN front page, pick top stories, summarise, and dispatch to Telegram."""
+    if not check_lemonade():
+        sys.exit(
+            f"❌ Lemonade server not reachable at {LEMONADE_URL}.\n"
+            "   Run: sudo systemctl start lemonade-server"
+        )
+
     print("📡 Fetching HN front page…")
     stories = fetch_hn_stories()
     print(f"   Found {len(stories)} stories")
@@ -292,7 +311,11 @@ def main():
         article_text = fetch_article_text(story["url"])
 
         print("   Summarising with Gemma-3-4b (local)…")
-        analysis = summarise(story["title"], article_text)
+        try:
+            analysis = summarise(story["title"], article_text)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            print(f"   ⚠️  LLM failed after retries ({type(e).__name__}), sending without summary.")
+            analysis = {"summary": "Summary unavailable (local LLM error).", "key_points": []}
 
         print("   Sending Telegram message…")
         send_telegram(story, analysis)
