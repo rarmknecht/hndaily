@@ -59,6 +59,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT_ID = os.environ.get("OWNER_ID", "")   # OWNER_ID is the numeric chat id
 LEMONADE_URL = os.environ.get("LEMONADE_URL", "http://localhost:8000/v1")
 LEMONADE_MODEL = os.environ.get("LEMONADE_MODEL", "Gemma-3-4b-it-GGUF")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
 
 if not BOT_TOKEN or not CHAT_ID:
     sys.exit(
@@ -170,8 +172,12 @@ def fetch_article_text(url: str, max_chars: int = 8000) -> str:
 # ---------------------------------------------------------------------------
 # Step 4 — Summarise with local Gemma via lemonade-server
 # ---------------------------------------------------------------------------
-def summarise(title: str, article_text: str) -> dict:
-    """Call local Gemma-3-4b-it via lemonade-server and return {summary, key_points}."""
+def summarise(title: str, article_text: str, llm_url: str = None, llm_model: str = None) -> dict:
+    """Call a local LLM via OpenAI-compatible API and return {summary, key_points}."""
+    llm_url = llm_url or LEMONADE_URL
+    llm_model = llm_model or LEMONADE_MODEL
+    label = "ollama" if "11434" in llm_url else "lemonade"
+
     prompt = textwrap.dedent(f"""
         Read the article below and return ONLY a valid JSON object with exactly two keys:
           "summary"    — 3-4 sentence overview of the article
@@ -186,16 +192,16 @@ def summarise(title: str, article_text: str) -> dict:
     """).strip()
 
     payload = {
-        "model": LEMONADE_MODEL,
+        "model": llm_model,
         "max_tokens": 600,
         "temperature": 0.2,
         "messages": [{"role": "user", "content": prompt}],
     }
     resp = post_with_retry(
-        f"{LEMONADE_URL}/chat/completions",
+        f"{llm_url}/chat/completions",
         retries=3,
         backoff=30.0,
-        label="lemonade",
+        label=label,
         headers={"content-type": "application/json"},
         json=payload,
         timeout=120,
@@ -286,13 +292,35 @@ def check_lemonade() -> bool:
         return False
 
 
+def check_ollama() -> bool:
+    """Return True if Ollama is reachable."""
+    try:
+        r = requests.get("http://localhost:11434/api/tags", timeout=5)
+        return r.status_code == 200
+    except Exception:  # pylint: disable=broad-exception-caught
+        return False
+
+
+def resolve_backend() -> tuple[str, str]:
+    """Return (llm_url, llm_model) for the first available backend, or exit."""
+    if check_lemonade():
+        print(f"✅ Using Lemonade at {LEMONADE_URL} (model: {LEMONADE_MODEL})")
+        return LEMONADE_URL, LEMONADE_MODEL
+    print(f"⚠️  Lemonade not reachable at {LEMONADE_URL} — trying Ollama…")
+    if check_ollama():
+        print(f"✅ Using Ollama at {OLLAMA_URL} (model: {OLLAMA_MODEL})")
+        return OLLAMA_URL, OLLAMA_MODEL
+    sys.exit(
+        "❌ No LLM backend available.\n"
+        f"   Lemonade: {LEMONADE_URL}  →  unreachable\n"
+        f"   Ollama:   http://localhost:11434  →  unreachable\n"
+        "   Start one of them and retry."
+    )
+
+
 def main():
     """Fetch HN front page, pick top stories, summarise, and dispatch to Telegram."""
-    if not check_lemonade():
-        sys.exit(
-            f"❌ Lemonade server not reachable at {LEMONADE_URL}.\n"
-            "   Run: sudo systemctl start lemonade-server"
-        )
+    llm_url, llm_model = resolve_backend()
 
     print("📡 Fetching HN front page…")
     stories = fetch_hn_stories()
@@ -310,9 +338,9 @@ def main():
         print("   Fetching article text…")
         article_text = fetch_article_text(story["url"])
 
-        print("   Summarising with Gemma-3-4b (local)…")
+        print(f"   Summarising with {llm_model} (local)…")
         try:
-            analysis = summarise(story["title"], article_text)
+            analysis = summarise(story["title"], article_text, llm_url, llm_model)
         except Exception as e:  # pylint: disable=broad-exception-caught
             print(f"   ⚠️  LLM failed after retries ({type(e).__name__}), sending without summary.")
             analysis = {"summary": "Summary unavailable (local LLM error).", "key_points": []}
