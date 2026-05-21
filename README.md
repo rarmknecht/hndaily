@@ -6,10 +6,12 @@ A lightweight Python script that scrapes the [Hacker News](https://news.ycombina
 
 1. Fetches the HN front page
 2. Scores stories against configurable interest keywords (AI, cybersecurity, ethics, philosophy by default)
-3. Picks the top 5 matches
-4. Downloads and cleans each article
-5. Summarises each article using a local LLM via [lemonade-server](https://github.com/lemonade-sdk/lemonade) (OpenAI-compatible API)
-6. Sends one Telegram message per story with summary + key takeaways + links
+3. Skips any story already sent in a previous run (dedupe)
+4. Picks the top 5 new matches
+5. Downloads and cleans each article
+6. Summarises each article using a local LLM via [lemonade-server](https://github.com/lemonade-sdk/lemonade) (OpenAI-compatible API)
+7. Sends one Telegram message per story with summary + key takeaways + links
+8. Records each sent story in a local SQLite datastore
 
 ## Requirements
 
@@ -36,6 +38,7 @@ Set the following environment variables (or put them in a `.env` file in the pro
 | `OWNER_ID` | ✅ | — | Your Telegram numeric chat ID |
 | `LEMONADE_URL` | ❌ | `http://localhost:8000/v1` | Base URL for your lemonade-server instance |
 | `LEMONADE_MODEL` | ❌ | `Gemma-3-4b-it-GGUF` | Model name to use for summarisation |
+| `HNDAILY_DB` | ❌ | `hndaily.db` (next to the script) | Path to the SQLite datastore file |
 
 Example `.env`:
 
@@ -64,6 +67,27 @@ To receive your daily digest automatically, add a cron job:
 ## Customising interests
 
 Edit the `INTEREST_KEYWORDS` dict in `hn_daily.py` to tune which stories get picked. Each keyword maps to a score weight — higher weight = stronger preference.
+
+## Datastore
+
+Every story sent to Telegram is recorded in a local SQLite database (`hndaily.db` by default). This serves two purposes:
+
+- **Dedupe** — a story is identified by its Hacker News item id; once recorded it is never sent again.
+- **Independent querying** — the file is plain SQLite, so any other app can read the digest history directly with SQL.
+
+The `stories` table holds: `hn_id`, `title`, `article_url`, `hn_url`, `score`, `summary`, `key_points` (JSON array), `article_text` (cleaned article body), and `sent_at` (ISO 8601 UTC).
+
+Example queries:
+
+```bash
+# The 10 most recent stories sent
+sqlite3 hndaily.db "SELECT sent_at, title FROM stories ORDER BY sent_at DESC LIMIT 10;"
+
+# Full record for one story
+sqlite3 hndaily.db "SELECT summary, key_points FROM stories WHERE hn_id = '12345678';"
+```
+
+The datastore is created automatically on first run.
 
 ## License
 

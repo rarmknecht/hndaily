@@ -13,6 +13,12 @@ env/
 # Logs — contain runtime output, not source
 *.log
 
+# Local datastore — generated at runtime, holds sent-story history
+hndaily.db
+*.db
+*.sqlite
+*.sqlite3
+
 # Environment / secrets — never commit credentials
 .env
 .env.*

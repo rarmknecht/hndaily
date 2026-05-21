@@ -15,6 +15,8 @@ import textwrap
 import requests
 from bs4 import BeautifulSoup
 
+import datastore
+
 
 # ---------------------------------------------------------------------------
 # Retry helper — wraps requests.post with exponential backoff
@@ -61,6 +63,10 @@ LEMONADE_URL = os.environ.get("LEMONADE_URL", "http://localhost:8000/v1")
 LEMONADE_MODEL = os.environ.get("LEMONADE_MODEL", "Gemma-3-4b-it-GGUF")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
+DB_PATH = os.environ.get(
+    "HNDAILY_DB",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "hndaily.db"),
+)
 
 if not BOT_TOKEN or not CHAT_ID:
     sys.exit(
@@ -232,8 +238,12 @@ def escape_md2(text: str) -> str:
     return re.sub(r"([" + re.escape(special) + r"])", r"\\\1", text)
 
 
-def send_telegram(story: dict, analysis: dict) -> None:
-    """Format and dispatch a Telegram message for one story."""
+def send_telegram(story: dict, analysis: dict) -> bool:
+    """Format and dispatch a Telegram message for one story.
+
+    Returns True if Telegram accepted the message (via MarkdownV2 or the
+    plain-text fallback), False otherwise.
+    """
     title = story["title"]
     url = story["url"]
     hn_url = f"https://news.ycombinator.com/item?id={story['hn_id']}"
@@ -265,7 +275,7 @@ def send_telegram(story: dict, analysis: dict) -> None:
     }, timeout=15)
 
     if r.ok:
-        return
+        return True
 
     # --- Fallback: plain text ---
     text_plain = (
@@ -275,11 +285,12 @@ def send_telegram(story: dict, analysis: dict) -> None:
         f"🔗 HN: {hn_url}\n"
         f"🔗 Article: {url}"
     )
-    post_with_retry(api_url, retries=3, backoff=300.0, label="telegram", json={
+    r = post_with_retry(api_url, retries=3, backoff=300.0, label="telegram", json={
         "chat_id": CHAT_ID,
         "text": text_plain,
         "disable_web_page_preview": False,
     }, timeout=15)
+    return r.ok
 
 
 # ---------------------------------------------------------------------------
@@ -324,18 +335,34 @@ def main():
     """Fetch HN front page, pick top stories, summarise, and dispatch to Telegram."""
     llm_url, llm_model = resolve_backend()
 
+    conn = datastore.connect(DB_PATH)
+    print(f"🗄️  Datastore: {DB_PATH}")
+
     print("📡 Fetching HN front page…")
     stories = fetch_hn_stories()
     print(f"   Found {len(stories)} stories")
 
-    top = pick_top(stories, n=5)
-    print("\n🏆 Top 5 picks:")
+    # Dedupe — drop anything already recorded as sent in a previous run
+    fresh = [s for s in stories if not datastore.already_sent(conn, s["hn_id"])]
+    skipped = len(stories) - len(fresh)
+    if skipped:
+        print(f"   Skipping {skipped} already-sent stor{'y' if skipped == 1 else 'ies'}")
+
+    top = pick_top(fresh, n=5)
+    for s in top:
+        s["score"] = score_story(s["title"])
+
+    if not top:
+        print("\n✅ Nothing new to send today.")
+        conn.close()
+        return
+
+    print(f"\n🏆 Top {len(top)} picks:")
     for i, s in enumerate(top, 1):
-        score = score_story(s["title"])
-        print(f"   {i}. [{score}] {s['title']}")
+        print(f"   {i}. [{s['score']}] {s['title']}")
 
     for i, story in enumerate(top, 1):
-        print(f"\n🔍 [{i}/5] Processing: {story['title'][:60]}…")
+        print(f"\n🔍 [{i}/{len(top)}] Processing: {story['title'][:60]}…")
 
         print("   Fetching article text…")
         article_text = fetch_article_text(story["url"])
@@ -348,13 +375,17 @@ def main():
             analysis = {"summary": "Summary unavailable (local LLM error).", "key_points": []}
 
         print("   Sending Telegram message…")
-        send_telegram(story, analysis)
-        print("   ✅ Sent!")
+        if send_telegram(story, analysis):
+            datastore.record_story(conn, story, story["score"], analysis, article_text)
+            print("   ✅ Sent & recorded!")
+        else:
+            print("   ⚠️  Telegram send failed — not recorded, will retry next run.")
 
         # Be polite between API calls
         if i < len(top):
             time.sleep(2)
 
+    conn.close()
     print("\n✅ All done!")
 
 
