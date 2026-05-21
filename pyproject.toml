@@ -1,0 +1,17 @@
+[project]
+name = "hndaily"
+version = "0.1.0"
+description = "Hacker News front page digest via Telegram, summarised by a local LLM"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "requests==2.34.0",
+    "beautifulsoup4==4.14.3",
+    "python-dotenv==1.2.2",
+]
+
+[tool.uv]
+# This is an application of loose scripts, not an installable package —
+# uv manages the environment and dependencies but does not build the project.
+package = false

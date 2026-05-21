@@ -15,7 +15,7 @@ A lightweight Python script that scrapes the [Hacker News](https://news.ycombina
 
 ## Requirements
 
-- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) — manages the Python 3.10+ runtime and dependencies for you
 - A running [lemonade-server](https://github.com/lemonade-sdk/lemonade) instance (local LLM — tested with `Gemma-3-4b-it-GGUF`)
 - A [Telegram bot token](https://core.telegram.org/bots#how-do-i-create-a-bot)
 - Your Telegram numeric chat ID
@@ -25,8 +25,10 @@ A lightweight Python script that scrapes the [Hacker News](https://news.ycombina
 ```bash
 git clone https://github.com/rarmknecht/hndaily.git
 cd hndaily
-pip install -r requirements.txt
+uv sync
 ```
+
+`uv sync` creates an isolated virtual environment and installs the pinned dependencies from `uv.lock`. Nothing is installed into your system Python.
 
 ## Configuration
 
@@ -53,8 +55,10 @@ LEMONADE_MODEL=Gemma-3-4b-it-GGUF
 ## Usage
 
 ```bash
-python hn_daily.py
+uv run hn_daily.py
 ```
+
+`uv run` syncs the environment automatically before running, so there is no separate activation step.
 
 ### Run on a schedule (cron)
 
@@ -62,8 +66,10 @@ To receive your daily digest automatically, add a cron job:
 
 ```bash
 # Run every morning at 7 AM
-0 7 * * * cd /path/to/hndaily && python hn_daily.py >> hn_daily.log 2>&1
+0 7 * * * cd /path/to/hndaily && uv run hn_daily.py >> hn_daily.log 2>&1
 ```
+
+Use the full path to `uv` if cron runs with a minimal `PATH` (e.g. `~/.local/bin/uv` or the output of `which uv`).
 
 ## Customising interests
 
