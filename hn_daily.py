@@ -247,10 +247,21 @@ def summarise(title: str, article_text: str, llm_url: str = None, llm_model: str
 # ---------------------------------------------------------------------------
 # Step 5 — Send Telegram message
 # ---------------------------------------------------------------------------
-def escape_md2(text: str) -> str:
-    """Escape special chars for Telegram MarkdownV2."""
-    special = r"\_*[]()~`>#+-=|{}.!"
-    return re.sub(r"([" + re.escape(special) + r"])", r"\\\1", text)
+_MD2_SPECIAL = r"\_*[]()~`>#+-=|{}.!"
+
+
+def escape_md2(text) -> str:
+    """Escape text for the body of a Telegram MarkdownV2 message."""
+    return re.sub(r"([" + re.escape(_MD2_SPECIAL) + r"])", r"\\\1", str(text))
+
+
+def escape_md2_url(url) -> str:
+    """Escape a URL for the (...) target of a MarkdownV2 inline link.
+
+    Telegram only requires ')' and '\\' to be escaped inside a link target —
+    escaping the full body set would corrupt the URL.
+    """
+    return str(url).replace("\\", "\\\\").replace(")", "\\)")
 
 
 def send_telegram(story: dict, analysis: dict) -> bool:
@@ -265,17 +276,15 @@ def send_telegram(story: dict, analysis: dict) -> bool:
     summary = analysis.get("summary", "No summary available.")
     key_points = analysis.get("key_points", [])
 
-    bullets = "\n".join(f"• {p}" for p in key_points) if key_points else "• (none)"
-
-    def md2(s: str) -> str:
-        return escape_md2(str(s))
-
+    takeaways = (
+        "\n".join(f"• {escape_md2(p)}" for p in key_points)
+        if key_points else "• \\(none\\)"
+    )
     text_md2 = (
-        f"*{md2(title)}*\n\n"
-        f"{md2(summary)}\n\n"
-        f"*Key Takeaways:*\n"
-        + "\n".join(f"• {md2(p)}" for p in key_points)
-        + f"\n\n[HN Discussion]({hn_url})  |  [Article]({url})"
+        f"*{escape_md2(title)}*\n\n"
+        f"{escape_md2(summary)}\n\n"
+        f"*Key Takeaways:*\n{takeaways}\n\n"
+        f"[HN Discussion]({escape_md2_url(hn_url)})  |  [Article]({escape_md2_url(url)})"
     )
 
     # NOTE: BOT_TOKEN is embedded in the Telegram API URL — this is required by the
@@ -292,7 +301,8 @@ def send_telegram(story: dict, analysis: dict) -> bool:
     if r.ok:
         return True
 
-    # --- Fallback: plain text ---
+    # --- Fallback: plain text (no escaping needed) ---
+    bullets = "\n".join(f"• {p}" for p in key_points) if key_points else "• (none)"
     text_plain = (
         f"📰 {title}\n\n"
         f"{summary}\n\n"
