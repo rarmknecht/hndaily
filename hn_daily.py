@@ -94,18 +94,22 @@ if not BOT_TOKEN or not CHAT_ID:
 # ---------------------------------------------------------------------------
 INTEREST_KEYWORDS = {
     # AI / ML
-    "ai": 3, "llm": 3, "gpt": 3, "claude": 3, "gemini": 3, "machine learning": 3,
-    "neural": 2, "deep learning": 3, "generative": 2, "openai": 3, "anthropic": 3,
-    "transformer": 2, "model": 1, "inference": 1, "embedding": 2, "agent": 2,
-    "automation": 1, "robotics": 1,
+    "ai": 3, "llm": 3, "llms": 3, "gpt": 3, "claude": 3, "gemini": 3,
+    "machine learning": 3, "neural": 2, "deep learning": 3, "generative": 2,
+    "openai": 3, "anthropic": 3, "transformer": 2, "transformers": 2,
+    "model": 1, "models": 1, "inference": 1, "embedding": 2, "embeddings": 2,
+    "agent": 2, "agents": 2, "automation": 1, "robotics": 1,
     # Cybersecurity
-    "security": 3, "cyber": 3, "hack": 2, "exploit": 3, "vulnerability": 3,
-    "malware": 3, "ransomware": 3, "breach": 3, "cve": 3, "zero-day": 3,
+    "security": 3, "cyber": 3, "hack": 2, "hacker": 2, "hackers": 2,
+    "hacking": 2, "exploit": 3, "exploits": 3, "vulnerability": 3,
+    "vulnerabilities": 3, "malware": 3, "ransomware": 3, "breach": 3,
+    "breaches": 3, "cve": 3, "cves": 3, "zero-day": 3, "zero-days": 3,
     "phishing": 2, "cryptography": 2, "encryption": 2, "privacy": 2,
     "surveillance": 2, "nsa": 2, "fbi": 1,
     # Ethics
-    "ethics": 3, "bias": 2, "fairness": 2, "accountability": 2, "regulation": 2,
-    "copyright": 2, "rights": 1, "policy": 1, "governance": 2, "trust": 1,
+    "ethics": 3, "bias": 2, "biases": 2, "fairness": 2, "accountability": 2,
+    "regulation": 2, "regulations": 2, "copyright": 2, "rights": 1,
+    "policy": 1, "policies": 1, "governance": 2, "trust": 1,
     "misinformation": 2, "disinformation": 2, "censorship": 2,
     # Philosophy / society
     "philosophy": 3, "consciousness": 3, "existential": 2, "meaning": 1,
@@ -150,9 +154,10 @@ def fetch_hn_stories() -> list[dict]:
 # Step 2 — Score & pick top N
 # ---------------------------------------------------------------------------
 def score_story(title: str) -> int:
-    """Return interest score for a story title based on keyword matches."""
+    """Return interest score for a title based on whole-word keyword matches."""
     t = title.lower()
-    return sum(v for k, v in INTEREST_KEYWORDS.items() if k in t)
+    return sum(v for k, v in INTEREST_KEYWORDS.items()
+               if re.search(rf"\b{re.escape(k)}\b", t))
 
 
 def pick_top(stories: list[dict], n: int = 5) -> list[dict]:
