@@ -39,6 +39,7 @@ Set the following environment variables (or put them in a `.env` file in the pro
 | `LEMONADE_URL` | ❌ | `http://localhost:8000/v1` | Base URL for your lemonade-server instance |
 | `LEMONADE_MODEL` | ❌ | `Gemma-3-4b-it-GGUF` | Model name to use for summarisation |
 | `HNDAILY_DB` | ❌ | `hndaily.db` (next to the script) | Path to the SQLite datastore file |
+| `LOG_LEVEL` | ❌ | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 
 Example `.env`:
 

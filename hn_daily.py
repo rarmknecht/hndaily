@@ -7,6 +7,7 @@ a Telegram message per article.
 """
 
 import json
+import logging
 import os
 import re
 import sys
@@ -16,6 +17,19 @@ import requests
 from bs4 import BeautifulSoup
 
 import datastore
+
+
+# ---------------------------------------------------------------------------
+# Logging — timestamped and level-filterable (set LOG_LEVEL=DEBUG/INFO/WARNING)
+# ---------------------------------------------------------------------------
+_LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), None)
+logging.basicConfig(
+    level=_LOG_LEVEL if isinstance(_LOG_LEVEL, int) else logging.INFO,
+    format="%(asctime)s  %(levelname)-7s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+)
+log = logging.getLogger("hn_daily")
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +48,9 @@ def post_with_retry(url, retries: int = 3, backoff: float = 5.0, label: str = ""
             last_exc = e
             if attempt < retries:
                 wait = backoff * (2 ** (attempt - 1))
-                tag = f" [{label}]" if label else ""
-                print(f"   ⚠️{tag} Attempt {attempt}/{retries} failed ({type(e).__name__}). Retrying in {wait:.0f}s…")
+                tag = f"[{label}] " if label else ""
+                log.warning("%sAttempt %d/%d failed (%s). Retrying in %.0fs…",
+                            tag, attempt, retries, type(e).__name__, wait)
                 time.sleep(wait)
     raise last_exc
 
@@ -317,11 +332,11 @@ def check_ollama() -> bool:
 def resolve_backend() -> tuple[str, str]:
     """Return (llm_url, llm_model) for the first available backend, or exit."""
     if check_lemonade():
-        print(f"✅ Using Lemonade at {LEMONADE_URL} (model: {LEMONADE_MODEL})")
+        log.info("✅ Using Lemonade at %s (model: %s)", LEMONADE_URL, LEMONADE_MODEL)
         return LEMONADE_URL, LEMONADE_MODEL
-    print(f"⚠️  Lemonade not reachable at {LEMONADE_URL} — trying Ollama…")
+    log.warning("Lemonade not reachable at %s — trying Ollama…", LEMONADE_URL)
     if check_ollama():
-        print(f"✅ Using Ollama at {OLLAMA_URL} (model: {OLLAMA_MODEL})")
+        log.info("✅ Using Ollama at %s (model: %s)", OLLAMA_URL, OLLAMA_MODEL)
         return OLLAMA_URL, OLLAMA_MODEL
     sys.exit(
         "❌ No LLM backend available.\n"
@@ -336,57 +351,57 @@ def main():
     llm_url, llm_model = resolve_backend()
 
     conn = datastore.connect(DB_PATH)
-    print(f"🗄️  Datastore: {DB_PATH}")
+    log.info("🗄️  Datastore: %s", DB_PATH)
 
-    print("📡 Fetching HN front page…")
+    log.info("📡 Fetching HN front page…")
     stories = fetch_hn_stories()
-    print(f"   Found {len(stories)} stories")
+    log.info("Found %d stories", len(stories))
 
     # Dedupe — drop anything already recorded as sent in a previous run
     fresh = [s for s in stories if not datastore.already_sent(conn, s["hn_id"])]
     skipped = len(stories) - len(fresh)
     if skipped:
-        print(f"   Skipping {skipped} already-sent stor{'y' if skipped == 1 else 'ies'}")
+        log.info("Skipping %d already-sent stor%s", skipped, "y" if skipped == 1 else "ies")
 
     top = pick_top(fresh, n=5)
     for s in top:
         s["score"] = score_story(s["title"])
 
     if not top:
-        print("\n✅ Nothing new to send today.")
+        log.info("✅ Nothing new to send today.")
         conn.close()
         return
 
-    print(f"\n🏆 Top {len(top)} picks:")
+    log.info("🏆 Top %d picks:", len(top))
     for i, s in enumerate(top, 1):
-        print(f"   {i}. [{s['score']}] {s['title']}")
+        log.info("  %d. [%d] %s", i, s["score"], s["title"])
 
     for i, story in enumerate(top, 1):
-        print(f"\n🔍 [{i}/{len(top)}] Processing: {story['title'][:60]}…")
+        log.info("🔍 [%d/%d] Processing: %s…", i, len(top), story["title"][:60])
 
-        print("   Fetching article text…")
+        log.info("Fetching article text…")
         article_text = fetch_article_text(story["url"])
 
-        print(f"   Summarising with {llm_model} (local)…")
+        log.info("Summarising with %s (local)…", llm_model)
         try:
             analysis = summarise(story["title"], article_text, llm_url, llm_model)
         except Exception as e:  # pylint: disable=broad-exception-caught
-            print(f"   ⚠️  LLM failed after retries ({type(e).__name__}), sending without summary.")
+            log.warning("LLM failed after retries (%s), sending without summary.", type(e).__name__)
             analysis = {"summary": "Summary unavailable (local LLM error).", "key_points": []}
 
-        print("   Sending Telegram message…")
+        log.info("Sending Telegram message…")
         if send_telegram(story, analysis):
             datastore.record_story(conn, story, story["score"], analysis, article_text)
-            print("   ✅ Sent & recorded!")
+            log.info("✅ Sent & recorded!")
         else:
-            print("   ⚠️  Telegram send failed — not recorded, will retry next run.")
+            log.warning("Telegram send failed — not recorded, will retry next run.")
 
         # Be polite between API calls
         if i < len(top):
             time.sleep(2)
 
     conn.close()
-    print("\n✅ All done!")
+    log.info("✅ All done!")
 
 
 if __name__ == "__main__":
