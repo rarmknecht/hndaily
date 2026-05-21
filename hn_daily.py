@@ -77,7 +77,7 @@ CHAT_ID = os.environ.get("OWNER_ID", "")   # OWNER_ID is the numeric chat id
 LEMONADE_URL = os.environ.get("LEMONADE_URL", "http://localhost:8000/v1")
 LEMONADE_MODEL = os.environ.get("LEMONADE_MODEL", "Gemma-3-4b-it-GGUF")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/v1")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:26b")
 DB_PATH = os.environ.get(
     "HNDAILY_DB",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "hndaily.db"),

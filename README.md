@@ -39,7 +39,9 @@ Set the following environment variables (or put them in a `.env` file in the pro
 | `BOT_TOKEN` | ✅ | — | Telegram bot token from @BotFather |
 | `OWNER_ID` | ✅ | — | Your Telegram numeric chat ID |
 | `LEMONADE_URL` | ❌ | `http://localhost:8000/v1` | Base URL for your lemonade-server instance |
-| `LEMONADE_MODEL` | ❌ | `Gemma-3-4b-it-GGUF` | Model name to use for summarisation |
+| `LEMONADE_MODEL` | ❌ | `Gemma-3-4b-it-GGUF` | Model name lemonade-server uses for summarisation |
+| `OLLAMA_URL` | ❌ | `http://localhost:11434/v1` | Base URL for Ollama — used if lemonade-server is unreachable |
+| `OLLAMA_MODEL` | ❌ | `gemma4:26b` | Model name Ollama uses for summarisation |
 | `HNDAILY_DB` | ❌ | `hndaily.db` (next to the script) | Path to the SQLite datastore file |
 | `LOG_LEVEL` | ❌ | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 
@@ -50,7 +52,11 @@ BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
 OWNER_ID=987654321
 LEMONADE_URL=http://localhost:8000/v1
 LEMONADE_MODEL=Gemma-3-4b-it-GGUF
+OLLAMA_URL=http://localhost:11434/v1
+OLLAMA_MODEL=gemma4:26b
 ```
+
+lemonade-server is tried first; if it is unreachable, the script falls back to Ollama. You only need to configure the backend you actually run.
 
 ## Usage
 
