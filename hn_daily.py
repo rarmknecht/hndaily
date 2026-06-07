@@ -56,6 +56,42 @@ def post_with_retry(url, retries: int = 3, backoff: float = 5.0, label: str = ""
 
 
 # ---------------------------------------------------------------------------
+# Retry helper — wraps requests.get with a minute-scale backoff schedule.
+# The network/DNS is occasionally unavailable at the exact moment the daily
+# cron fires (observed 12× in the log history as NameResolutionError). A
+# transient DNS hiccup clears well within a minute, so we wait minutes rather
+# than seconds before giving up on the day's run entirely.
+# ---------------------------------------------------------------------------
+FETCH_BACKOFFS = (60, 300, 900)  # seconds between attempts: 1 min, 5 min, 15 min
+
+
+def get_with_retry(url, backoffs=FETCH_BACKOFFS, label: str = "", **kwargs):
+    """GET with retries on connection/DNS/timeout errors.
+
+    Makes len(backoffs) + 1 attempts (one initial + one per backoff), sleeping
+    the corresponding interval between failures. `backoffs` is an explicit
+    schedule in seconds (default 1 min / 5 min / 15 min) rather than a doubling
+    factor, so a DNS blip at cron-fire time gets minutes to resolve.
+    """
+    last_exc = None
+    attempts = len(backoffs) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return requests.get(url, **kwargs)  # nosec B113 — timeout in **kwargs  # pylint: disable=missing-timeout
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ReadTimeout) as e:
+            last_exc = e
+            if attempt <= len(backoffs):
+                wait = backoffs[attempt - 1]
+                tag = f"[{label}] " if label else ""
+                log.warning("%sAttempt %d/%d failed (%s). Retrying in %.0fs…",
+                            tag, attempt, attempts, type(e).__name__, wait)
+                time.sleep(wait)
+    raise last_exc
+
+
+# ---------------------------------------------------------------------------
 # Config — reads from environment (or .env if python-dotenv is installed)
 # ---------------------------------------------------------------------------
 try:
@@ -130,7 +166,9 @@ HEADERS = {
 # ---------------------------------------------------------------------------
 def fetch_hn_stories() -> list[dict]:
     """Return list of dicts with title, url, hn_id."""
-    resp = requests.get("https://news.ycombinator.com", headers=HEADERS, timeout=15)
+    resp = get_with_retry(
+        "https://news.ycombinator.com", headers=HEADERS, timeout=15, label="HN fetch"
+    )
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
